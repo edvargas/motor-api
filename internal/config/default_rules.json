@@ -1,0 +1,27 @@
+[
+  {
+    "rule_id": "velocidade-pix",
+    "version": 4,
+    "enabled": true,
+    "requires": ["event", "window"],
+    "window": { "span_seconds": 300, "type": "count" },
+    "condition": "channel == \"pix\" && window.count_channel_pix > 8",
+    "emits": { "severity": "alta", "category": "velocidade" }
+  },
+  {
+    "rule_id": "valor-atipico",
+    "version": 2,
+    "enabled": true,
+    "requires": ["event", "customer_risk"],
+    "condition": "amount > risk.limite_valor",
+    "emits": { "severity": "media", "category": "valor" }
+  },
+  {
+    "rule_id": "valor-critico",
+    "version": 1,
+    "enabled": false,
+    "requires": ["event", "customer_risk"],
+    "condition": "amount > (risk.limite_valor * 5)",
+    "emits": { "severity": "critica", "category": "valor" }
+  }
+]

@@ -1,0 +1,5 @@
+{
+  "version": 5,
+  "default_customer_risk": { "limite_valor": 5000, "nivel": "padrao" },
+  "thresholds": { "score_minimo_alerta": 0.6 }
+}
