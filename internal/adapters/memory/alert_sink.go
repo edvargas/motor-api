@@ -16,9 +16,9 @@ type AlertSink struct {
 	logger *slog.Logger
 }
 
-// NewAlertSink builds an empty AlertSink that logs through slog.Default().
-func NewAlertSink() *AlertSink {
-	return &AlertSink{logger: slog.Default()}
+// NewAlertSink builds an empty AlertSink that logs through the provided logger.
+func NewAlertSink(logger *slog.Logger) *AlertSink {
+	return &AlertSink{logger: logger}
 }
 
 func (s *AlertSink) Publish(ctx context.Context, alert domain.Alert) error {
