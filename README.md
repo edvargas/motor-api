@@ -35,7 +35,10 @@ contra `POST /transactions`.
 - `GET /healthz` — liveness.
 - `GET /metrics` — snapshot JSON dos contadores.
 - `POST /admin/window/down` / `/admin/window/up` — alterna a indisponibilidade simulada do `WindowStore` (demonstra modo degradado).
-- `POST /admin/config/reload` — recarrega a config ativa (demonstra "nova regra sem redeploy").
+- `POST /admin/config/reload` — recarrega a config ativa (demonstra "nova regra sem redeploy"). Aceita opcionalmente um corpo JSON `{"rules": [...], "profile": {...}}` (`profile` é opcional, cai no perfil ativo se omitido) para aplicar novas regras direto via curl; sem corpo, recarrega o que já estiver staged (ex.: pelo `demo`), ou não faz nada se nada estiver staged.
+  ```bash
+  curl -s localhost:8080/admin/config/reload -d '{"rules": [...regras completas, incl. as já ativas...]}' | jq
+  ```
 
 ## O que cada pacote faz
 
@@ -46,7 +49,7 @@ contra `POST /transactions`.
 | `internal/config` | Parsing/validação dos perfis de config (JSON embutido via `go:embed`) |
 | `internal/engine` | Avaliação de regras (`expr`) e agregação de severidade/score |
 | `internal/pipeline` | `Processor`: idempotência → janela/risco → regras → decisão → emissão |
-| `internal/pipeline/dispatch` | `WorkerPool`: ordena por `hash(customer_id) % N` |
+| `internal/pipeline/dispatch` | `dispatch.Pool`: ordena por `hash(customer_id) % N` |
 | `internal/adapters/memory` | Implementações em memória de todas as portas, com toggles de falha |
 | `internal/adapters/httpapi` | Adaptador HTTP fino: sem lógica de detecção |
 | `internal/loadgen` | Gerador de massa sintética + cliente de carga interno |
@@ -63,7 +66,7 @@ contra `POST /transactions`.
   o mesmo `dispatch.Pool`, que por sua vez chama sempre o mesmo
   `pipeline.Processor.Process`. Nenhuma regra de negócio existe na camada
   HTTP.
-- **Ordem por `customer_id`**: o `WorkerPool` roteia cada transação para
+- **Ordem por `customer_id`**: o `dispatch.Pool` roteia cada transação para
   `hash(customer_id) % N`, garantindo que transações do mesmo cliente nunca
   sejam reordenadas, enquanto clientes diferentes processam em paralelo —
   tanto na API síncrona quanto no endpoint de lote (que reparte por
@@ -81,7 +84,28 @@ contra `POST /transactions`.
   válida em caso de erro.
 - **Mocks plugáveis com toggles de falha**: `WindowStore.SetDown(bool)` e
   `RiskStore.SetDown(bool)` simulam indisponibilidade para testes e para a
-  demo, sem qualquer dependência de infraestrutura real.
+  demo, sem qualquer dependência de infraestrutura real. Indisponibilidade é
+  tratada tanto no momento em que o `Processor` verifica a janela quanto,
+  defensivamente, durante a leitura de cada regra (`internal/engine`) — o
+  `WindowStore` pode cair *entre* essas duas checagens sob tráfego real (é
+  exatamente o que `POST /admin/window/down` faz ao vivo), e nos dois casos
+  o resultado é sempre degradação graciosa (`evaluation: "partial"`), nunca
+  um erro fatal.
+- **Score e threshold de alerta**: `score = peso(severidade_max) * 0.7 +
+  média(pesos das regras disparadas) * 0.3`, com pesos
+  `baixa=0.25, media=0.5, alta=0.75, critica=1.0`. `score_minimo_alerta` no
+  perfil padrão é **0.5** (não 0.6): como `valor-atipico` emite severidade
+  `media` (peso 0.5), um único disparo dela soma exatamente `0.5*0.7 +
+  0.5*0.3 = 0.5` — em 0.6 essa regra jamais alertaria sozinha, o que
+  contradiz o próprio roteiro de demo do enunciado ("uma transação de valor
+  alto que dispara valor-atipico"). Corrigido para 0.5 para que o cenário
+  primário do enunciado funcione como descrito.
+- **Resiliência do pool**: `dispatch.Pool`'s workers recuperam de panics em
+  `job.Run` (uma regra malformada ou um bug não derruba o processo inteiro,
+  nem trava a fila daquele worker).
+- **Logging estruturado**: `pipeline.Processor` recebe um `*slog.Logger` e
+  gera um `trace_id` por transação, correlacionando as linhas de log de
+  cada requisição (`customer_id`, `transaction_id`, resultado).
 
 ## Sobre os números de desempenho
 
