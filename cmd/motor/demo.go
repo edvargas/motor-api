@@ -120,8 +120,14 @@ func processViaPool(ctx context.Context, pool *dispatch.Pool, processor *pipelin
 	enqueued := pool.Submit(ctx, dispatch.Job{
 		CustomerID: tx.CustomerID,
 		Run: func(jobCtx context.Context) {
+			// o is sent via defer, not as the last statement, so a panic
+			// inside Process still unblocks the waiter below instead of
+			// hanging forever (context.Background() never cancels) —
+			// dispatch.Pool recovers and logs the panic after this defer.
+			o := outcome{err: fmt.Errorf("internal error: job panicked before completing")}
+			defer func() { done <- o }()
 			v, err := processor.Process(ctx, tx)
-			done <- outcome{verdict: v, err: err}
+			o = outcome{verdict: v, err: err}
 		},
 	})
 	if !enqueued {

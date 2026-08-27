@@ -76,8 +76,15 @@ func (h *handler) processOne(ctx context.Context, tx domain.Transaction) (pipeli
 	h.pool.Submit(ctx, dispatch.Job{
 		CustomerID: tx.CustomerID,
 		Run: func(jobCtx context.Context) {
+			// o is sent via defer, not as the last statement, so a panic
+			// inside Process still unblocks the waiter below (with a
+			// generic failure outcome) instead of leaving it selecting
+			// forever — dispatch.Pool recovers the panic itself and logs
+			// it after this defer runs.
+			o := outcome{err: fmt.Errorf("internal error: job panicked before completing")}
+			defer func() { done <- o }()
 			v, err := h.processor.Process(ctx, tx)
-			done <- outcome{verdict: v, err: err}
+			o = outcome{verdict: v, err: err}
 		},
 	})
 

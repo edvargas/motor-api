@@ -62,8 +62,16 @@ func TestSameCustomerBatchThroughPoolMatchesSequential(t *testing.T) {
 		enqueued := pool.Submit(context.Background(), dispatch.Job{
 			CustomerID: tx.CustomerID,
 			Run: func(jobCtx context.Context) {
+				// require.* calls t.FailNow() -> runtime.Goexit() on
+				// whatever goroutine runs it; on a pool worker that would
+				// kill the worker mid-drain instead of just failing the
+				// test, silently starving any remaining same-customer
+				// jobs behind it. Use assert (marks the test failed
+				// without exiting the goroutine) and always send a
+				// result so the collector loop below never blocks past
+				// its own timeout.
 				v, err := poolProcessor.Process(context.Background(), tx)
-				require.NoError(t, err)
+				assert.NoError(t, err, "index %d", i)
 				results <- result{index: i, verdict: v}
 			},
 		})
