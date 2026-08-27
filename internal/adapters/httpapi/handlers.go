@@ -135,16 +135,31 @@ func (h *handler) postTransactionBatch(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		tx := tx
 		txStart := time.Now()
+
+		// markDone guarantees wg.Done() fires exactly once for this job,
+		// whether it actually runs (via Run's defer below) or gets dropped
+		// by dispatch.Pool.Submit because ctx was canceled before the
+		// worker's queue had room (Submit falls through its select's
+		// <-ctx.Done() case without ever invoking Run). Without this,
+		// wg.Wait() below could block forever on a dropped job.
+		var once sync.Once
+		markDone := func() { once.Do(wg.Done) }
+
 		h.pool.Submit(r.Context(), dispatch.Job{
 			CustomerID: tx.CustomerID,
 			Run: func(jobCtx context.Context) {
-				defer wg.Done()
+				defer markDone()
 				v, err := h.processor.Process(r.Context(), tx)
-				mu.Lock()
-				defer mu.Unlock()
 				if err != nil {
+					h.logger.ErrorContext(r.Context(), "batch item processing failed",
+						"customer_id", tx.CustomerID,
+						"transaction_id", tx.TransactionID,
+						"error", err,
+					)
 					return
 				}
+				mu.Lock()
+				defer mu.Unlock()
 				total++
 				latencies = append(latencies, time.Since(txStart))
 				if v.Duplicate {
@@ -159,6 +174,16 @@ func (h *handler) postTransactionBatch(w http.ResponseWriter, r *http.Request) {
 				}
 			},
 		})
+
+		// If the request context is already canceled right after Submit
+		// returns, the job was most likely dropped (never queued) rather
+		// than executed — Submit's select only returns via <-ctx.Done()
+		// in that case. Fire markDone() here too so wg.Wait() cannot hang;
+		// the sync.Once above ensures this is a no-op if Run already ran
+		// or still runs later.
+		if r.Context().Err() != nil {
+			markDone()
+		}
 	}
 	wg.Wait()
 
