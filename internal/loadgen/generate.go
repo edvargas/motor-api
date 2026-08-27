@@ -22,12 +22,20 @@ var channels = []domain.Channel{domain.ChannelPix, domain.ChannelTED, domain.Cha
 
 // Generate produces opts.NumTransactions synthetic transactions, with
 // purposeful triggers baked in so the demo isn't alert-sparse:
-//   - ~5% of customers get a burst of 9 pix transactions in quick
-//     succession (triggers velocidade-pix).
+//   - ~5% of customers are marked as "burst customers"; each one is
+//     guaranteed at least 9 consecutive pix transactions with CapturedAt
+//     timestamps one second apart (well inside the velocidade-pix rule's
+//     300-second window), reliably triggering velocidade-pix. Marked
+//     customers may also incidentally draw pix transactions during the
+//     normal random generation below.
 //   - ~10% of transactions use an amount above the default limite_valor
 //     of 5000 (triggers valor-atipico).
 //   - ~2% of transactions are exact duplicates of an earlier one in the
 //     same batch (exercises idempotency).
+//
+// The guaranteed bursts are appended after the main random stream, so the
+// total output count is opts.NumTransactions plus the burst and duplicate
+// transactions.
 //
 // Determinism: pass a non-zero Seed to get the same output across runs.
 func Generate(opts Options) []domain.Transaction {
@@ -78,6 +86,32 @@ func Generate(opts Options) []domain.Transaction {
 			dup := out[rng.Intn(len(out))]
 			dup.CapturedAt = tx.CapturedAt
 			out = append(out, dup)
+		}
+	}
+
+	// Guarantee each marked burst customer a deterministic burst of at
+	// least 9 pix transactions, spaced 1 second apart, so velocidade-pix
+	// reliably fires regardless of how the random draws above landed.
+	const burstSize = 9
+	burstBase := base.Add(time.Duration(opts.NumTransactions) * time.Millisecond)
+	burstSeq := 0
+	for custIdx := 0; custIdx < opts.NumCustomers; custIdx++ {
+		if !burstCustomers[custIdx] {
+			continue
+		}
+		for j := 0; j < burstSize; j++ {
+			tx := domain.Transaction{
+				CustomerID:    customers[custIdx],
+				TransactionID: fmt.Sprintf("tx-burst-%06d-%02d", custIdx, j),
+				Amount:        50 + rng.Float64()*450,
+				Currency:      "BRL",
+				Channel:       domain.ChannelPix,
+				DeviceID:      fmt.Sprintf("device-%06d", custIdx),
+				Geo:           domain.Geo{Country: "BR", Lat: -23.55, Lon: -46.63},
+				CapturedAt:    burstBase.Add(time.Duration(burstSeq) * time.Second),
+			}
+			out = append(out, tx)
+			burstSeq++
 		}
 	}
 
