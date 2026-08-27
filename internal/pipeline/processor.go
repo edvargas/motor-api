@@ -7,10 +7,12 @@ package pipeline
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/edvargas05/motor-deteccao/internal/domain"
@@ -44,10 +46,15 @@ type Processor struct {
 	cfg         ports.ConfigProvider
 	sink        ports.AlertSink
 	evaluator   *engine.Evaluator
+	logger      *slog.Logger
 }
 
-// NewProcessor wires the Processor's dependencies.
-func NewProcessor(idempotency ports.IdempotencyStore, window ports.WindowStore, risk ports.RiskStore, cfg ports.ConfigProvider, sink ports.AlertSink, evaluator *engine.Evaluator) *Processor {
+// NewProcessor wires the Processor's dependencies. A nil logger falls back
+// to slog.Default().
+func NewProcessor(idempotency ports.IdempotencyStore, window ports.WindowStore, risk ports.RiskStore, cfg ports.ConfigProvider, sink ports.AlertSink, evaluator *engine.Evaluator, logger *slog.Logger) *Processor {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Processor{
 		idempotency: idempotency,
 		window:      window,
@@ -55,7 +62,20 @@ func NewProcessor(idempotency ports.IdempotencyStore, window ports.WindowStore, 
 		cfg:         cfg,
 		sink:        sink,
 		evaluator:   evaluator,
+		logger:      logger,
 	}
+}
+
+// newTraceID returns a short random hex string correlating every log line
+// emitted while processing one transaction. It is not a distributed trace
+// ID — in a real system this would come from the inbound request/message
+// headers and only be generated here as a fallback.
+func newTraceID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "unknown"
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // Process runs tx through idempotency, layer resolution, rule evaluation,
@@ -65,12 +85,21 @@ func (p *Processor) Process(ctx context.Context, tx domain.Transaction) (Verdict
 		return Verdict{}, err
 	}
 
+	traceID := newTraceID()
+	log := p.logger.With(
+		"trace_id", traceID,
+		"customer_id", tx.CustomerID,
+		"transaction_id", tx.TransactionID,
+	)
+	log.DebugContext(ctx, "processing transaction", "amount", tx.Amount, "channel", string(tx.Channel))
+
 	key := tx.IdempotencyKey()
 	seen, err := p.idempotency.Seen(ctx, key)
 	if err != nil {
 		return Verdict{}, fmt.Errorf("checking idempotency: %w", err)
 	}
 	if seen {
+		log.InfoContext(ctx, "transaction discarded as duplicate")
 		return Verdict{Duplicate: true}, nil
 	}
 
@@ -91,8 +120,12 @@ func (p *Processor) Process(ctx context.Context, tx domain.Transaction) (Verdict
 		return Verdict{}, fmt.Errorf("evaluating rules: %w", err)
 	}
 
+	// The window layer counts as degraded either because Record already
+	// failed (windowAvailable == false) or because a per-rule window read
+	// failed later, mid-evaluation (result.WindowDegraded) — the store can
+	// be toggled down between those two points.
 	var degraded []string
-	if !windowAvailable {
+	if !windowAvailable || result.WindowDegraded {
 		degraded = []string{"window"}
 	}
 	partial := len(degraded) > 0
@@ -104,6 +137,8 @@ func (p *Processor) Process(ctx context.Context, tx domain.Transaction) (Verdict
 		if err := p.idempotency.Mark(ctx, key, idempotencyTTL); err != nil {
 			return Verdict{}, fmt.Errorf("marking idempotency: %w", err)
 		}
+		log.InfoContext(ctx, "transaction processed, no alert",
+			"score", result.Score, "partial", partial, "degraded", degraded)
 		return Verdict{Partial: partial, Degraded: degraded}, nil
 	}
 
@@ -136,6 +171,15 @@ func (p *Processor) Process(ctx context.Context, tx domain.Transaction) (Verdict
 		return Verdict{}, fmt.Errorf("marking idempotency: %w", err)
 	}
 
+	log.InfoContext(ctx, "alert emitted",
+		"alert_id", alert.AlertID,
+		"severity", string(alert.Severity),
+		"categories", alert.Categories,
+		"score", alert.Score,
+		"evaluation", string(alert.Evaluation),
+		"degraded", degraded,
+	)
+
 	return Verdict{Alert: &alert, Partial: partial, Degraded: degraded}, nil
 }
 
@@ -158,6 +202,12 @@ func alertID(tx domain.Transaction, result engine.Result, rules []domain.RuleDef
 	span := defaultBucketSpan
 	if r, ok := ruleForHighestSeverity(result, rules); ok && r.Window != nil {
 		span = time.Duration(r.Window.SpanSeconds) * time.Second
+	}
+	// Defensive: config validation rejects a non-positive span_seconds, but
+	// a zero span reaching here would panic on the division below. Fall
+	// back to the default rather than take the process down.
+	if span <= 0 {
+		span = defaultBucketSpan
 	}
 
 	bucketStart := tx.CapturedAt.Unix() / int64(span.Seconds()) * int64(span.Seconds())

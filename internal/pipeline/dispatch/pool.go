@@ -6,7 +6,10 @@ package dispatch
 
 import (
 	"context"
+	"fmt"
 	"hash/fnv"
+	"log/slog"
+	"runtime/debug"
 	"sync"
 )
 
@@ -26,6 +29,10 @@ type Job struct {
 type Pool struct {
 	queues []chan Job
 	wg     sync.WaitGroup
+	// logger is only used to report recovered panics. It is not a
+	// constructor parameter so NewPool stays a one-argument call; cmd/motor
+	// installs the application logger via slog.SetDefault at startup.
+	logger *slog.Logger
 }
 
 // NewPool starts workers goroutines, each draining its own queue.
@@ -33,7 +40,7 @@ func NewPool(workers int) *Pool {
 	if workers < 1 {
 		workers = 1
 	}
-	p := &Pool{queues: make([]chan Job, workers)}
+	p := &Pool{queues: make([]chan Job, workers), logger: slog.Default()}
 	for i := range p.queues {
 		p.queues[i] = make(chan Job, 64)
 		p.wg.Add(1)
@@ -45,8 +52,26 @@ func NewPool(workers int) *Pool {
 func (p *Pool) runWorker(queue chan Job) {
 	defer p.wg.Done()
 	for job := range queue {
-		job.Run(context.Background())
+		p.runJob(job)
 	}
+}
+
+// runJob invokes job.Run with panic recovery: a panic anywhere downstream
+// (a pathological rule, a bug in the pipeline) must not kill the worker
+// goroutine, which would silently stop processing every subsequent job for
+// every customer hashed to this queue — and, unrecovered, would take the
+// whole process down with every in-flight request.
+func (p *Pool) runJob(job Job) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.logger.Error("dispatch worker recovered from panic in job",
+				"customer_id", job.CustomerID,
+				"panic", fmt.Sprint(r),
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+	job.Run(context.Background())
 }
 
 // Submit routes job to its customer's worker queue. It blocks if that

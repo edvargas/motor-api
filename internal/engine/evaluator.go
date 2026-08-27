@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -21,6 +22,11 @@ type Result struct {
 	Severity       domain.Severity
 	Categories     []string
 	Score          float64
+	// WindowDegraded is true when at least one rule was skipped because a
+	// window read failed *during* evaluation — i.e. the store went down
+	// after the caller's own availability check. The caller must fold this
+	// into its degraded/partial reporting.
+	WindowDegraded bool
 }
 
 // Evaluator evaluates config-driven rules against a transaction, its
@@ -44,7 +50,10 @@ func NewEvaluator(windowStore ports.WindowStore) *Evaluator {
 }
 
 // Evaluate runs every enabled rule in rules against tx. Rules requiring
-// "window" are skipped when windowAvailable is false. Rules requiring
+// "window" are skipped when windowAvailable is false, and also when the
+// window store turns out to be down at read time (Result.WindowDegraded
+// then reports it, so the caller can still mark the verdict partial).
+// Window unavailability is never a hard error. Rules requiring
 // "customer_risk" always evaluate against risk (the caller resolves risk
 // to the customer's profile or the global default beforehand).
 func (e *Evaluator) Evaluate(ctx context.Context, rules []domain.RuleDef, tx domain.Transaction, risk domain.RiskProfile, windowAvailable bool) (Result, error) {
@@ -53,6 +62,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, rules []domain.RuleDef, tx dom
 		triggeredSevs   []domain.Severity
 		categories      = make(map[string]struct{})
 		overallSeverity domain.Severity
+		windowDegraded  bool
 	)
 
 	for _, rule := range rules {
@@ -65,6 +75,16 @@ func (e *Evaluator) Evaluate(ctx context.Context, rules []domain.RuleDef, tx dom
 
 		env, err := e.buildEnv(ctx, rule, tx, risk)
 		if err != nil {
+			// The window store can go down between the caller's
+			// availability check and this read (e.g. POST
+			// /admin/window/down under live traffic). Degrade exactly as
+			// if windowAvailable had been false for this rule: skip it,
+			// flag the layer as degraded, and keep evaluating the rules
+			// that don't need the window. Never a hard error.
+			if errors.Is(err, domain.ErrEnrichmentUnavailable) {
+				windowDegraded = true
+				continue
+			}
 			return Result{}, fmt.Errorf("building env for rule %q: %w", rule.RuleID, err)
 		}
 
@@ -102,6 +122,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, rules []domain.RuleDef, tx dom
 		Severity:       overallSeverity,
 		Categories:     catList,
 		Score:          Score(triggeredSevs),
+		WindowDegraded: windowDegraded,
 	}, nil
 }
 

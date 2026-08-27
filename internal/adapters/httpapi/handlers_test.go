@@ -30,7 +30,7 @@ func newTestServer(t *testing.T) *Server {
 	cfg := memory.NewConfigProvider(bundle)
 	sink := memory.NewAlertSink(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	evaluator := engine.NewEvaluator(window)
-	processor := pipeline.NewProcessor(idem, window, risk, cfg, sink, evaluator)
+	processor := pipeline.NewProcessor(idem, window, risk, cfg, sink, evaluator, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	pool := dispatch.NewPool(4)
 	t.Cleanup(pool.Close)
 

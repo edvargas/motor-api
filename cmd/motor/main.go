@@ -25,6 +25,9 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	// Installed as the default so packages that cannot take an injected
+	// logger (e.g. dispatch.Pool's panic recovery) still log here.
+	slog.SetDefault(logger)
 
 	mode := "serve"
 	if len(os.Args) > 1 && os.Args[1][0] != '-' {
@@ -69,7 +72,7 @@ func buildEngine(logger *slog.Logger, workers int) (*pipeline.Processor, *dispat
 	cfg := memory.NewConfigProvider(bundle)
 	sink := memory.NewAlertSink(logger)
 	evaluator := engine.NewEvaluator(window)
-	processor := pipeline.NewProcessor(idem, window, risk, cfg, sink, evaluator)
+	processor := pipeline.NewProcessor(idem, window, risk, cfg, sink, evaluator, logger)
 	pool := dispatch.NewPool(workers)
 
 	return processor, pool, window, cfg, sink, nil

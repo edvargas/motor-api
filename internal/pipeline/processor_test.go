@@ -30,7 +30,7 @@ func newTestProcessor(t *testing.T) (*Processor, *memory.WindowStore, *memory.Ri
 	sink := memory.NewAlertSink(testLogger())
 	evaluator := engine.NewEvaluator(window)
 
-	return NewProcessor(idem, window, risk, cfg, sink, evaluator), window, risk, sink
+	return NewProcessor(idem, window, risk, cfg, sink, evaluator, testLogger()), window, risk, sink
 }
 
 func TestProcessDuplicateTransaction(t *testing.T) {

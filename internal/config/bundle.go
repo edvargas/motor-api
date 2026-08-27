@@ -71,10 +71,14 @@ func validateRule(r domain.RuleDef, seen map[string]bool) error {
 	if r.Condition == "" {
 		return fmt.Errorf("%w: rule %q missing condition", domain.ErrInvalidConfig, r.RuleID)
 	}
-	if r.RequiresLayer("window") {
-		if r.Window == nil || r.Window.SpanSeconds <= 0 {
-			return fmt.Errorf("%w: rule %q requires window but has no valid window.span_seconds", domain.ErrInvalidConfig, r.RuleID)
-		}
+	if r.RequiresLayer("window") && r.Window == nil {
+		return fmt.Errorf("%w: rule %q requires window but has no window spec", domain.ErrInvalidConfig, r.RuleID)
+	}
+	// Any declared window spec must be valid, whether or not the rule
+	// requires the window layer: a zero span_seconds would otherwise reach
+	// the alert_id bucket computation and divide by zero.
+	if r.Window != nil && r.Window.SpanSeconds <= 0 {
+		return fmt.Errorf("%w: rule %q has invalid window.span_seconds %d (must be positive)", domain.ErrInvalidConfig, r.RuleID, r.Window.SpanSeconds)
 	}
 
 	// Validate condition syntax compiles. Undefined variables are allowed
