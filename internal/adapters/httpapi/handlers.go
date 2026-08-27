@@ -3,12 +3,15 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/edvargas05/motor-deteccao/internal/adapters/memory"
+	"github.com/edvargas05/motor-deteccao/internal/config"
 	"github.com/edvargas05/motor-deteccao/internal/domain"
 	"github.com/edvargas05/motor-deteccao/internal/pipeline"
 	"github.com/edvargas05/motor-deteccao/internal/pipeline/dispatch"
@@ -44,7 +47,7 @@ func (h *handler) postTransaction(w http.ResponseWriter, r *http.Request) {
 
 	verdict, err := h.processOne(r.Context(), tx)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeProcessError(w, r, err)
 		return
 	}
 
@@ -149,10 +152,13 @@ func (h *handler) postTransactionBatch(w http.ResponseWriter, r *http.Request) {
 					)
 					return
 				}
+				itemLatency := time.Since(txStart)
+				h.record(v, itemLatency) // batch traffic must also count toward the server-wide /metrics snapshot
+
 				mu.Lock()
 				defer mu.Unlock()
 				total++
-				latencies = append(latencies, time.Since(txStart))
+				latencies = append(latencies, itemLatency)
 				if v.Duplicate {
 					dups++
 					return
@@ -219,16 +225,54 @@ func (h *handler) postWindowUp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"window": "up"})
 }
 
+// reloadRequest is the optional body for POST /admin/config/reload: new
+// rules plus an optional profile (defaulting to the currently active one
+// when omitted, so a caller can push just a rule change).
+type reloadRequest struct {
+	Rules   []domain.RuleDef           `json:"rules"`
+	Profile *domain.OperationalProfile `json:"profile,omitempty"`
+}
+
 func (h *handler) postConfigReload(w http.ResponseWriter, r *http.Request) {
 	if h.cfg == nil {
 		writeError(w, http.StatusServiceUnavailable, "config admin toggle not available in this mode")
 		return
 	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	if r.ContentLength != 0 {
+		var req reloadRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON payload")
+			return
+		}
+		profile := h.cfg.Current().Profile
+		if req.Profile != nil {
+			profile = *req.Profile
+		}
+		bundle, err := config.Load(mustMarshalJSON(req.Rules), mustMarshalJSON(profile))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		h.cfg.SetOverride(bundle)
+	}
+	// With no body, this reloads whatever was already staged (e.g. by the
+	// demo script's SetOverride) — a no-op if nothing is staged.
+
 	if err := h.cfg.Reload(r.Context()); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"version": h.cfg.Current().Version})
+}
+
+func mustMarshalJSON(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(fmt.Sprintf("marshal %T: %v", v, err)) // in-memory struct, never fails
+	}
+	return b
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -239,4 +283,22 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// writeProcessError maps a Process error to the right HTTP status: a
+// structurally invalid transaction is the caller's fault (400); a client
+// that disconnected/canceled gets no useful response to write; anything
+// else (a store error, a publish failure) is this server's fault (500),
+// not "your payload is bad."
+func writeProcessError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, domain.ErrInvalidTransaction):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		// Client disconnected or the request deadline passed — nobody is
+		// listening for a response, and net/http will surface the broken
+		// connection on its own; avoid writing a misleading 500.
+	default:
+		writeError(w, http.StatusInternalServerError, "internal error processing transaction")
+	}
 }

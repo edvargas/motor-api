@@ -9,6 +9,8 @@ import (
 
 	"github.com/edvargas05/motor-deteccao/internal/config"
 	"github.com/edvargas05/motor-deteccao/internal/domain"
+	"github.com/edvargas05/motor-deteccao/internal/pipeline"
+	"github.com/edvargas05/motor-deteccao/internal/pipeline/dispatch"
 )
 
 // runDemo executes a scripted walkthrough of every capability, printing
@@ -22,8 +24,11 @@ func runDemo(logger *slog.Logger) error {
 	ctx := context.Background()
 
 	printSection := func(title string) { fmt.Printf("\n=== %s ===\n", title) }
+	// show routes each transaction through the shared dispatch.Pool, like
+	// every other inbound path — the demo must never call Processor with
+	// its own ad-hoc goroutine scheme.
 	show := func(label string, tx domain.Transaction) {
-		v, err := processor.Process(ctx, tx)
+		v, err := processViaPool(ctx, pool, processor, tx)
 		if err != nil {
 			fmt.Printf("%s: ERROR %v\n", label, err)
 			return
@@ -99,4 +104,34 @@ func runDemo(logger *slog.Logger) error {
 
 	fmt.Println("\ndemo complete")
 	return nil
+}
+
+// processViaPool submits tx to pool and waits synchronously for the
+// result — the same shape httpapi's processOne uses for its single-item
+// HTTP path, reused here so the demo genuinely goes through the shared
+// dispatcher instead of calling Processor directly.
+func processViaPool(ctx context.Context, pool *dispatch.Pool, processor *pipeline.Processor, tx domain.Transaction) (pipeline.Verdict, error) {
+	type outcome struct {
+		verdict pipeline.Verdict
+		err     error
+	}
+	done := make(chan outcome, 1)
+
+	enqueued := pool.Submit(ctx, dispatch.Job{
+		CustomerID: tx.CustomerID,
+		Run: func(jobCtx context.Context) {
+			v, err := processor.Process(ctx, tx)
+			done <- outcome{verdict: v, err: err}
+		},
+	})
+	if !enqueued {
+		return pipeline.Verdict{}, ctx.Err()
+	}
+
+	select {
+	case o := <-done:
+		return o.verdict, o.err
+	case <-ctx.Done():
+		return pipeline.Verdict{}, ctx.Err()
+	}
 }
