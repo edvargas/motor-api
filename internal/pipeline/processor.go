@@ -97,13 +97,13 @@ func (p *Processor) Process(ctx context.Context, tx domain.Transaction) (Verdict
 	}
 	partial := len(degraded) > 0
 
-	// Mark idempotency only after we've committed to a verdict, so a
-	// crash mid-evaluation does not silently swallow a retry.
-	if err := p.idempotency.Mark(ctx, key, idempotencyTTL); err != nil {
-		return Verdict{}, fmt.Errorf("marking idempotency: %w", err)
-	}
-
 	if result.Score < ruleSet.Profile.Thresholds.ScoreMinimoAlerta || len(result.TriggeredRules) == 0 {
+		// Mark idempotency only after we've fully committed to this
+		// no-alert verdict, so a crash mid-evaluation does not
+		// silently swallow a retry.
+		if err := p.idempotency.Mark(ctx, key, idempotencyTTL); err != nil {
+			return Verdict{}, fmt.Errorf("marking idempotency: %w", err)
+		}
 		return Verdict{Partial: partial, Degraded: degraded}, nil
 	}
 
@@ -125,7 +125,15 @@ func (p *Processor) Process(ctx context.Context, tx domain.Transaction) (Verdict
 	}
 
 	if err := p.sink.Publish(ctx, alert); err != nil {
+		// Do not mark idempotency: publish failed, so a retry of this
+		// transaction must re-evaluate and re-attempt publish rather
+		// than short-circuiting as a duplicate.
 		return Verdict{}, fmt.Errorf("publishing alert: %w", err)
+	}
+
+	// Mark idempotency only after the alert has been durably published.
+	if err := p.idempotency.Mark(ctx, key, idempotencyTTL); err != nil {
+		return Verdict{}, fmt.Errorf("marking idempotency: %w", err)
 	}
 
 	return Verdict{Alert: &alert, Partial: partial, Degraded: degraded}, nil
