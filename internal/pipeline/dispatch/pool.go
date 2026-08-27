@@ -12,8 +12,9 @@ import (
 
 // Job is one unit of work routed by CustomerID's hash to a fixed worker.
 // Run must not block on anything outside ctx's lifetime and must itself
-// signal completion (e.g. via a channel it closes over) since Submit does
-// not return a result.
+// signal completion (e.g. via a channel it closes over) if the caller
+// needs to know when it finished — Submit's return value only reports
+// whether the job was enqueued, not whether it has completed.
 type Job struct {
 	CustomerID string
 	Run        func(ctx context.Context)
@@ -50,11 +51,17 @@ func (p *Pool) runWorker(queue chan Job) {
 
 // Submit routes job to its customer's worker queue. It blocks if that
 // worker's queue is full (backpressure), respecting ctx cancellation.
-func (p *Pool) Submit(ctx context.Context, job Job) {
+// It returns true if job was enqueued (and will therefore run and is
+// responsible for signaling its own completion), or false if it was
+// dropped because ctx was done before/while enqueueing — in which case
+// job.Run is guaranteed to never be called.
+func (p *Pool) Submit(ctx context.Context, job Job) bool {
 	idx := workerIndex(job.CustomerID, len(p.queues))
 	select {
 	case p.queues[idx] <- job:
+		return true
 	case <-ctx.Done():
+		return false
 	}
 }
 

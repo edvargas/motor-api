@@ -136,19 +136,10 @@ func (h *handler) postTransactionBatch(w http.ResponseWriter, r *http.Request) {
 		tx := tx
 		txStart := time.Now()
 
-		// markDone guarantees wg.Done() fires exactly once for this job,
-		// whether it actually runs (via Run's defer below) or gets dropped
-		// by dispatch.Pool.Submit because ctx was canceled before the
-		// worker's queue had room (Submit falls through its select's
-		// <-ctx.Done() case without ever invoking Run). Without this,
-		// wg.Wait() below could block forever on a dropped job.
-		var once sync.Once
-		markDone := func() { once.Do(wg.Done) }
-
-		h.pool.Submit(r.Context(), dispatch.Job{
+		enqueued := h.pool.Submit(r.Context(), dispatch.Job{
 			CustomerID: tx.CustomerID,
 			Run: func(jobCtx context.Context) {
-				defer markDone()
+				defer wg.Done()
 				v, err := h.processor.Process(r.Context(), tx)
 				if err != nil {
 					h.logger.ErrorContext(r.Context(), "batch item processing failed",
@@ -175,14 +166,13 @@ func (h *handler) postTransactionBatch(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 
-		// If the request context is already canceled right after Submit
-		// returns, the job was most likely dropped (never queued) rather
-		// than executed — Submit's select only returns via <-ctx.Done()
-		// in that case. Fire markDone() here too so wg.Wait() cannot hang;
-		// the sync.Once above ensures this is a no-op if Run already ran
-		// or still runs later.
-		if r.Context().Err() != nil {
-			markDone()
+		// Submit's return value is ground truth: true means the job was
+		// enqueued and its Run closure (above) will call wg.Done() itself
+		// once it finishes. false means the job was dropped and will never
+		// run, so we must call wg.Done() here ourselves or wg.Wait() below
+		// would hang forever.
+		if !enqueued {
+			wg.Done()
 		}
 	}
 	wg.Wait()
