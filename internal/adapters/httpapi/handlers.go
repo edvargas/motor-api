@@ -202,16 +202,28 @@ func (h *handler) getMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) postWindowDown(w http.ResponseWriter, r *http.Request) {
+	if h.window == nil {
+		writeError(w, http.StatusServiceUnavailable, "window admin toggle not available in this mode")
+		return
+	}
 	h.window.SetDown(true)
 	writeJSON(w, http.StatusOK, map[string]string{"window": "down"})
 }
 
 func (h *handler) postWindowUp(w http.ResponseWriter, r *http.Request) {
+	if h.window == nil {
+		writeError(w, http.StatusServiceUnavailable, "window admin toggle not available in this mode")
+		return
+	}
 	h.window.SetDown(false)
 	writeJSON(w, http.StatusOK, map[string]string{"window": "up"})
 }
 
 func (h *handler) postConfigReload(w http.ResponseWriter, r *http.Request) {
+	if h.cfg == nil {
+		writeError(w, http.StatusServiceUnavailable, "config admin toggle not available in this mode")
+		return
+	}
 	if err := h.cfg.Reload(r.Context()); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
