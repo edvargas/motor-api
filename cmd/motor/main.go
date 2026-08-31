@@ -1,7 +1,7 @@
 // Command motor is the transaction-detection engine: a fully-mocked,
 // ports & adapters application demonstrating idempotency, sliding-window
 // rules, degraded mode, hot-reloadable config, and customer-ordered
-// concurrency, driven by an HTTP API and a mocked partitioned source.
+// concurrency, driven by an HTTP API.
 package main
 
 import (
@@ -19,7 +19,6 @@ import (
 	"github.com/edvargas05/motor-deteccao/internal/config"
 	"github.com/edvargas05/motor-deteccao/internal/domain"
 	"github.com/edvargas05/motor-deteccao/internal/engine"
-	"github.com/edvargas05/motor-deteccao/internal/loadgen"
 	"github.com/edvargas05/motor-deteccao/internal/pipeline"
 	"github.com/edvargas05/motor-deteccao/internal/pipeline/dispatch"
 )
@@ -96,13 +95,6 @@ func runServe(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// The mocked Kafka-like source feeds the exact same pool the HTTP API
-	// submits to, per the spec's requirement that both inbound ports
-	// converge on one Processor via one dispatcher — never their own
-	// goroutine scheme. This is a small illustrative script, not load; use
-	// `loadtest` for volume.
-	go runMockedSource(ctx, pool, processor, logger)
-
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("serving", "addr", *addr)
@@ -120,37 +112,4 @@ func runServe(logger *slog.Logger) error {
 	case err := <-errCh:
 		return err
 	}
-}
-
-// runMockedSource replays a small illustrative script of transactions
-// through the shared dispatch.Pool, standing in for a partitioned Kafka
-// consumer. It routes every transaction through pool.Submit — the same
-// entry point the HTTP API uses — so no detection logic is duplicated and
-// ordering per customer_id is preserved identically to the HTTP path.
-func runMockedSource(ctx context.Context, pool *dispatch.Pool, processor *pipeline.Processor, logger *slog.Logger) {
-	script := loadgen.Generate(loadgen.Options{NumTransactions: 30, NumCustomers: 6, Seed: 1})
-	source := memory.NewScriptedSource(script)
-
-	events, err := source.Run(ctx)
-	if err != nil {
-		logger.Error("mocked source failed to start", "error", err)
-		return
-	}
-
-	for tx := range events {
-		tx := tx
-		enqueued := pool.Submit(ctx, dispatch.Job{
-			CustomerID: tx.CustomerID,
-			Run: func(jobCtx context.Context) {
-				if _, err := processor.Process(ctx, tx); err != nil {
-					logger.Error("mocked source: processing failed",
-						"customer_id", tx.CustomerID, "transaction_id", tx.TransactionID, "error", err)
-				}
-			},
-		})
-		if !enqueued {
-			return // ctx canceled (shutdown) while submitting
-		}
-	}
-	logger.Info("mocked source: script exhausted", "transactions", len(script))
 }

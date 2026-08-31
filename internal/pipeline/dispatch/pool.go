@@ -1,7 +1,7 @@
-// Package dispatch hosts the WorkerPool that both the HTTP API and the
-// mocked source feed into, guaranteeing every transaction for a given
-// customer_id is processed by the same worker, in submission order, while
-// different customers process in parallel.
+// Package dispatch hosts the WorkerPool that the HTTP API feeds into,
+// guaranteeing every transaction for a given customer_id is processed by
+// the same worker, in submission order, while different customers process
+// in parallel.
 package dispatch
 
 import (

@@ -45,7 +45,7 @@ contra `POST /transactions`.
 | Pacote | Responsabilidade |
 |---|---|
 | `internal/domain` | Entidades e value objects, sem dependências externas |
-| `internal/ports` | Interfaces do lado do consumidor: source, stores, config, sink |
+| `internal/ports` | Interfaces do lado do consumidor: stores, config, sink |
 | `internal/config` | Parsing/validação dos perfis de config (JSON embutido via `go:embed`) |
 | `internal/engine` | Avaliação de regras (`expr`) e agregação de severidade/score |
 | `internal/pipeline` | `Processor`: idempotência → janela/risco → regras → decisão → emissão |
@@ -57,15 +57,18 @@ contra `POST /transactions`.
 
 ## Decisões de design
 
-- **Ports & adapters**: cada dependência externa (fonte de eventos, janela,
-  risco, config, sink de alertas) é uma interface definida em `internal/ports`
-  (lado do consumidor), com uma única implementação em memória plugável em
+- **Ports & adapters**: cada dependência externa (janela, risco, config,
+  sink de alertas) é uma interface definida em `internal/ports` (lado do
+  consumidor), com uma única implementação em memória plugável em
   `internal/adapters/memory`.
-- **Lógica única no `Processor`**: tanto a API HTTP quanto a fonte mockada
-  (que simula um consumidor Kafka particionado por `customer_id`) alimentam
-  o mesmo `dispatch.Pool`, que por sua vez chama sempre o mesmo
-  `pipeline.Processor.Process`. Nenhuma regra de negócio existe na camada
-  HTTP.
+- **Lógica única no `Processor`**: a API HTTP alimenta o `dispatch.Pool`,
+  que por sua vez chama sempre o mesmo `pipeline.Processor.Process`.
+  Nenhuma regra de negócio existe na camada HTTP. (Uma versão anterior
+  incluía uma segunda porta de entrada mockando um consumidor Kafka
+  particionado por `customer_id`; foi removida para manter o escopo focado
+  em API + testes de carga — o `dispatch.Pool` continua desenhado para
+  múltiplas portas de entrada convergirem nele, então reintroduzir uma
+  fonte de eventos no futuro não exigiria mudar o `Processor`.)
 - **Ordem por `customer_id`**: o `dispatch.Pool` roteia cada transação para
   `hash(customer_id) % N`, garantindo que transações do mesmo cliente nunca
   sejam reordenadas, enquanto clientes diferentes processam em paralelo —
