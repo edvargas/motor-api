@@ -1,0 +1,251 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_date": "2026-09-01T12:00:00.000Z",
+  "__export_source": "motor-deteccao.docs",
+  "resources": [
+    {
+      "_id": "wrk_motor_deteccao",
+      "_type": "workspace",
+      "parentId": null,
+      "name": "Motor de Deteccao de Transacoes Suspeitas",
+      "description": "HTTP API do motor de deteccao de transacoes suspeitas. Veja docs/postman/README.md para detalhes de cada endpoint.",
+      "scope": "collection"
+    },
+    {
+      "_id": "env_base_motor_deteccao",
+      "_type": "environment",
+      "parentId": "wrk_motor_deteccao",
+      "name": "Base Environment",
+      "data": {},
+      "dataPropertyOrder": {},
+      "color": null,
+      "isPrivate": false,
+      "metaSortKey": 0
+    },
+    {
+      "_id": "env_local_motor_deteccao",
+      "_type": "environment",
+      "parentId": "env_base_motor_deteccao",
+      "name": "local",
+      "data": {
+        "baseUrl": "http://localhost:8080",
+        "customerId": "cust-001",
+        "transactionId": "tx-001"
+      },
+      "dataPropertyOrder": {
+        "&": ["baseUrl", "customerId", "transactionId"]
+      },
+      "color": "#7d69cb",
+      "isPrivate": false,
+      "metaSortKey": 1
+    },
+    {
+      "_id": "fld_transactions",
+      "_type": "request_group",
+      "parentId": "wrk_motor_deteccao",
+      "name": "Transactions",
+      "description": "",
+      "metaSortKey": -3000
+    },
+    {
+      "_id": "fld_observability",
+      "_type": "request_group",
+      "parentId": "wrk_motor_deteccao",
+      "name": "Observability",
+      "description": "",
+      "metaSortKey": -2000
+    },
+    {
+      "_id": "fld_admin",
+      "_type": "request_group",
+      "parentId": "wrk_motor_deteccao",
+      "name": "Admin",
+      "description": "",
+      "metaSortKey": -1000
+    },
+    {
+      "_id": "req_submit_transaction",
+      "_type": "request",
+      "parentId": "fld_transactions",
+      "name": "Submit transaction",
+      "description": "Avalia uma transacao de forma sincrona atraves do pool de dispatch e do pipeline de deteccao.\n\nRespostas:\n- 200 com { \"suspicious\": false } quando nao ha alerta.\n- 200 com { \"suspicious\": true, \"alert\": {...} } quando uma regra dispara.\n- 200 com { \"status\": \"duplicate\", \"suspicious\": false } quando customer_id:transaction_id ja foi processado.\n- 400 quando o payload e invalido (campos obrigatorios ausentes, amount <= 0, channel desconhecido, captured_at ausente).\n- 500 em falha interna de processamento.",
+      "url": "{{ _.baseUrl }}/transactions",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"customer_id\": \"{{ _.customerId }}\",\n  \"transaction_id\": \"{{ _.transactionId }}\",\n  \"amount\": 150.50,\n  \"currency\": \"BRL\",\n  \"channel\": \"pix\",\n  \"device_id\": \"device-abc\",\n  \"geo\": {\n    \"country\": \"BR\",\n    \"lat\": -23.5505,\n    \"lon\": -46.6333\n  },\n  \"captured_at\": \"2026-09-01T12:00:00Z\"\n}"
+      },
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" }
+      ],
+      "parameters": [],
+      "authentication": {},
+      "metaSortKey": -4000,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global"
+    },
+    {
+      "_id": "req_submit_transaction_batch",
+      "_type": "request",
+      "parentId": "fld_transactions",
+      "name": "Submit transaction batch",
+      "description": "Avalia um lote de transacoes em paralelo (particionado por customer_id, preservando a ordem de submissao por cliente) e retorna um resumo agregado.\n\n200:\n{\n  \"total\": 2,\n  \"alerts\": 1,\n  \"duplicates\": 0,\n  \"partials\": 0,\n  \"latency_ms\": { \"p50\": 1.2, \"p95\": 3.4, \"p99\": 4.0 },\n  \"tps\": 950.5\n}\n\n400 quando o corpo nao e um JSON array valido.",
+      "url": "{{ _.baseUrl }}/transactions/batch",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "[\n  {\n    \"customer_id\": \"cust-001\",\n    \"transaction_id\": \"tx-101\",\n    \"amount\": 200.00,\n    \"currency\": \"BRL\",\n    \"channel\": \"pix\",\n    \"device_id\": \"device-abc\",\n    \"geo\": { \"country\": \"BR\", \"lat\": -23.5505, \"lon\": -46.6333 },\n    \"captured_at\": \"2026-09-01T12:00:00Z\"\n  },\n  {\n    \"customer_id\": \"cust-001\",\n    \"transaction_id\": \"tx-102\",\n    \"amount\": 8000.00,\n    \"currency\": \"BRL\",\n    \"channel\": \"ted\",\n    \"device_id\": \"device-abc\",\n    \"geo\": { \"country\": \"BR\", \"lat\": -23.5505, \"lon\": -46.6333 },\n    \"captured_at\": \"2026-09-01T12:00:05Z\"\n  }\n]"
+      },
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" }
+      ],
+      "parameters": [],
+      "authentication": {},
+      "metaSortKey": -3000,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global"
+    },
+    {
+      "_id": "req_healthz",
+      "_type": "request",
+      "parentId": "fld_observability",
+      "name": "Health check",
+      "description": "Liveness check simples. Sempre 200 com { \"status\": \"ok\" } se o processo esta de pe.",
+      "url": "{{ _.baseUrl }}/healthz",
+      "method": "GET",
+      "body": {},
+      "headers": [],
+      "parameters": [],
+      "authentication": {},
+      "metaSortKey": -4000,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global"
+    },
+    {
+      "_id": "req_metrics",
+      "_type": "request",
+      "parentId": "fld_observability",
+      "name": "Get metrics snapshot",
+      "description": "Snapshot acumulado desde o boot do processo (nao e resetado por request), somando trafego de /transactions e /transactions/batch.\n\n{\n  \"processed\": 120,\n  \"duplicates\": 2,\n  \"alerts\": 15,\n  \"partials\": 1,\n  \"by_category\": { \"velocidade\": 10, \"valor\": 5 },\n  \"latency_ms\": { \"p50\": 1.1, \"p95\": 3.0, \"p99\": 5.5 }\n}",
+      "url": "{{ _.baseUrl }}/metrics",
+      "method": "GET",
+      "body": {},
+      "headers": [],
+      "parameters": [],
+      "authentication": {},
+      "metaSortKey": -3000,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global"
+    },
+    {
+      "_id": "req_window_down",
+      "_type": "request",
+      "parentId": "fld_admin",
+      "name": "Force sliding window down",
+      "description": "Forca o WindowStore (janela deslizante usada por regras como velocidade-pix) para o modo indisponivel, simulando degradacao. Requer que o servidor tenha sido iniciado com um WindowStore (nao disponivel no modo loadtest, que passa nil) -> 503 caso contrario.\n\n200: { \"window\": \"down\" }",
+      "url": "{{ _.baseUrl }}/admin/window/down",
+      "method": "POST",
+      "body": {},
+      "headers": [],
+      "parameters": [],
+      "authentication": {},
+      "metaSortKey": -4000,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global"
+    },
+    {
+      "_id": "req_window_up",
+      "_type": "request",
+      "parentId": "fld_admin",
+      "name": "Restore sliding window",
+      "description": "Restaura o WindowStore ao modo normal. Mesma restricao de disponibilidade do endpoint down.\n\n200: { \"window\": \"up\" }",
+      "url": "{{ _.baseUrl }}/admin/window/up",
+      "method": "POST",
+      "body": {},
+      "headers": [],
+      "parameters": [],
+      "authentication": {},
+      "metaSortKey": -3000,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global"
+    },
+    {
+      "_id": "req_config_reload_body",
+      "_type": "request",
+      "parentId": "fld_admin",
+      "name": "Reload config (rules + profile)",
+      "description": "Substitui as regras (e, opcionalmente, o profile operacional) em tempo real. rules deve conter o conjunto COMPLETO de regras desejado (nao e um merge incremental) - inclua as ja ativas. profile e opcional: se omitido, mantem o profile atualmente ativo.\n\nRequer que o servidor tenha sido iniciado com um ConfigProvider (nao disponivel no modo loadtest) -> 503 caso contrario.\n\n200: { \"version\": N } - N e o contador interno de reloads do ConfigProvider (comeca em 1, incrementa a cada reload valido); NAO e o profile.version enviado no body.\n400 se o body nao for JSON valido ou as regras/profile forem invalidos.",
+      "url": "{{ _.baseUrl }}/admin/config/reload",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"rules\": [\n    {\n      \"rule_id\": \"velocidade-pix\",\n      \"version\": 4,\n      \"enabled\": true,\n      \"requires\": [\"event\", \"window\"],\n      \"window\": { \"span_seconds\": 300, \"type\": \"count\" },\n      \"condition\": \"channel == \\\"pix\\\" && window.count_channel_pix > 8\",\n      \"emits\": { \"severity\": \"alta\", \"category\": \"velocidade\" }\n    },\n    {\n      \"rule_id\": \"valor-atipico\",\n      \"version\": 2,\n      \"enabled\": true,\n      \"requires\": [\"event\", \"customer_risk\"],\n      \"condition\": \"amount > risk.limite_valor\",\n      \"emits\": { \"severity\": \"media\", \"category\": \"valor\" }\n    }\n  ],\n  \"profile\": {\n    \"version\": 6,\n    \"default_customer_risk\": { \"limite_valor\": 5000, \"nivel\": \"padrao\" },\n    \"thresholds\": { \"score_minimo_alerta\": 0.5 }\n  }\n}"
+      },
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" }
+      ],
+      "parameters": [],
+      "authentication": {},
+      "metaSortKey": -2000,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global"
+    },
+    {
+      "_id": "req_config_reload_nobody",
+      "_type": "request",
+      "parentId": "fld_admin",
+      "name": "Reload staged config (no body)",
+      "description": "Variante sem corpo: aplica qualquer override ja staged (por exemplo, via ConfigProvider.SetOverride no script de demo). E um no-op se nada estiver staged.\n\n200: { \"version\": N } com a versao atualmente ativa.",
+      "url": "{{ _.baseUrl }}/admin/config/reload",
+      "method": "POST",
+      "body": {},
+      "headers": [],
+      "parameters": [],
+      "authentication": {},
+      "metaSortKey": -1000,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global"
+    }
+  ]
+}

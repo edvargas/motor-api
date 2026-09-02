@@ -40,6 +40,9 @@ contra `POST /transactions`.
   curl -s localhost:8080/admin/config/reload -d '{"rules": [...regras completas, incl. as já ativas...]}' | jq
   ```
 
+Coleções Postman e Insomnia prontas (todos os endpoints acima, com exemplos e
+descrições) em [`docs/api-clients/`](docs/api-clients/README.md).
+
 ## O que cada pacote faz
 
 | Pacote | Responsabilidade |
