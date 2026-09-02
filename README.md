@@ -169,6 +169,5 @@ projeto, então nenhuma lib de acesso a dados foi necessária.
 ## Sobre os números de desempenho
 
 Os números de `loadtest` (TPS, p50/p95/p99) refletem **este processo local
-rodando contra mocks em memória** — não a infraestrutura real (Kafka, CC,
-EK7, rede). Servem para demonstrar que o paralelismo por `customer_id`
+rodando contra mocks em memória** — não a infraestrutura real. Servem para demonstrar que o paralelismo por `customer_id`
 sustenta carga, não como benchmark de produção.
