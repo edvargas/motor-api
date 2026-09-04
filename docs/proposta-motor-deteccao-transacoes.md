@@ -37,13 +37,14 @@ O ponto central é a separação de responsabilidades: o motor decide *que* uma 
 flowchart TB
   SI["Serviços internos"] --> AG["API Gateway<br/>Lambda authorizer"]
   AG --> MOT{{"ECS Fargate: motor<br/>API de ingestão"}}
-  MOT <--> DDB[("DynamoDB TTL<br/>dedup + janela + risco")]
-  AC["AppConfig<br/>regras + parâmetros"] -.hot reload.-> MOT
+  MOT <--> DDB[("DynamoDB TTL<br/>dedup + janela")]
+  AC["AppConfig<br/>regras + parâmetros"] -.consulta + cache.-> MOT
+  RS["Serviço de perfil de risco"] -.consulta + cache.-> MOT
   MOT --> KA[["Kafka: alertas"]]
   KA --> DISP{{"ECS: dispatcher<br/>(downstream)"}}
 ```
 
-O tráfego entra pelo API Gateway (autenticação no Lambda authorizer) e chega ao motor no ECS Fargate via VPC Link. O motor mantém estado efêmero no DynamoDB (idempotência, janela e perfil de risco), carrega regras e parâmetros do AppConfig com hot reload, e publica alertas no Kafka corporativo (Kafka as a service), consumido pelo dispatcher a jusante. Transversal a todo o fluxo: **segurança** com KMS (repouso), TLS (trânsito) e IAM (auth entre serviços); **SRE** com CloudWatch (métricas, logs, alarmes) e X-Ray (tracing).
+O tráfego entra pelo API Gateway (autenticação no Lambda authorizer) e chega ao motor no ECS Fargate via VPC Link. O motor mantém estado efêmero no DynamoDB (idempotência e janela) e consome **duas fontes externas com o mesmo padrão de cache local e polling**: o AppConfig (regras e parâmetros) e o serviço de perfil de risco (por cliente). Esse padrão viabiliza o hot reload e mantém o motor operante se qualquer das duas fontes ficar indisponível — ele segue com a última versão/valor em cache. Os alertas são publicados no Kafka corporativo (Kafka as a service), consumido pelo dispatcher a jusante. Transversal a todo o fluxo: **segurança** com KMS (repouso), TLS (trânsito) e IAM (auth entre serviços); **SRE** com CloudWatch (métricas, logs, alarmes) e X-Ray (tracing).
 
 ### 3.2 Plano de controle (gestão de regras)
 
@@ -55,7 +56,7 @@ flowchart LR
   AC -.hot reload.-> MOT{{"ECS: motor"}}
 ```
 
-Separar plano de controle de plano de dados garante que a gestão de regras nunca compete por recurso com o caminho crítico dos 500 ms. A validação no AppConfig (JSON Schema) protege o plano de dados de uma configuração quebrada, com rollback de versão. O mesmo AppConfig alimenta consumidores a jusante (o dispatcher), fora do escopo deste documento.
+Separar plano de controle de plano de dados garante que a gestão de regras nunca compete por recurso com o caminho crítico dos 500 ms. A validação no AppConfig (JSON Schema) protege o plano de dados de uma configuração quebrada, com rollback de versão. A nova versão chega ao motor pelo mesmo cache com polling do plano de dados: o hot reload ocorre dentro do intervalo de poll (não instantâneo), e o AppConfig indisponível não interrompe o motor, que segue com a última versão em cache. O mesmo AppConfig alimenta consumidores a jusante (o dispatcher), fora do escopo deste documento.
 
 ## 4. Descrição detalhada de cada passo
 
@@ -69,7 +70,7 @@ Recebida a transação, o motor a roteia internamente por `customer_id` (hash �
 Antes de qualquer trabalho caro, o motor verifica se a transação já foi processada, consultando o DynamoDB por uma chave determinística (`customer_id + transaction_id`). Duplicata é descartada. Fazer isso primeiro evita reprocessar e evita alerta duplicado — importante porque um chamador de API pode reenviar em retry.
 
 ### Passo 4 — Avaliação de janela e regras
-O motor mantém, no DynamoDB com TTL, uma janela deslizante por cliente, e resolve os parâmetros de risco do cliente (com default global). As regras vêm do AppConfig e são avaliadas contra três camadas: o evento, a janela recente e o `customer_risk`. Cada regra declara de quais camadas depende (`requires`), o que habilita o **modo degradado**: se um store oscilar, as regras que só pedem `event` continuam rodando, as que pedem a camada ausente são puladas, e o alerta sai marcado como parcial. Perfil de risco ausente ou store fora ⇒ usa o default.
+O motor mantém, no DynamoDB com TTL, uma janela deslizante por cliente, e resolve os parâmetros de risco consultando o **serviço de perfil de risco** (com cache local, à semelhança do AppConfig). As regras vêm do AppConfig e são avaliadas contra três camadas: o evento, a janela recente e o `customer_risk`. Cada regra declara de quais camadas depende (`requires`), o que habilita o **modo degradado**: se uma fonte oscilar, as regras que só pedem `event` continuam rodando, as que pedem a camada ausente são puladas, e o alerta sai marcado como parcial. Perfil de risco não encontrado, ou serviço fora sem cache ⇒ usa o default do AppConfig.
 
 ### Passo 5 — Decisão
 Se nenhuma regra dispara, registra-se métrica e encerra. Se dispara, o motor agrega: a `severity` é a maior entre as regras disparadas e as `categories` são a união. É aqui que nascem a severidade e a categoria que o consumidor a jusante usará.
@@ -78,7 +79,7 @@ Se nenhuma regra dispara, registra-se métrica e encerra. Se dispara, o motor ag
 O motor publica no tópico `alertas` um evento com a classificação (`severity`, `categories`), o score, as regras disparadas e um `alert_id` determinístico. O tópico é retido (replay de graça), por isso **não** carrega PII de contato, apenas identificadores. **Esta é a fronteira do motor**: a partir daqui, o dispatcher consome o alerta e decide o que fazer — fora do detalhe deste documento.
 
 ### Resiliência do motor
-A indisponibilidade de um store de estado degrada, mas não derruba: `customer_risk` fora cai no default; janela fora pula as regras dependentes e marca o alerta como parcial. A publicação do alerta é a única dependência dura de saída; uma falha ali é tratada com retry e, se necessário, uma fila de reprocesso interna, para não perder detecção.
+A indisponibilidade de uma fonte externa degrada, mas não derruba: AppConfig ou serviço de risco fora ⇒ o motor opera com a última versão/valor em cache; `customer_risk` sem cache ⇒ cai no default; janela fora ⇒ pula as regras dependentes e marca o alerta como parcial. A publicação do alerta é a única dependência dura de saída; uma falha ali é tratada com retry e, se necessário, uma fila de reprocesso interna, para não perder detecção.
 
 ## 5. Modelagem das integrações (escopo do motor)
 
@@ -111,7 +112,7 @@ Body:
 ```
 
 ### Motor ↔ DynamoDB (TTL)
-Três famílias de item na mesma tabela, sem banco durável.
+Duas famílias de item na mesma tabela, sem banco durável. O perfil de risco por cliente **não** fica aqui — é um serviço externo (ver abaixo).
 ```
 // idempotência
 PK = "IDEMP#<customer_id>#<transaction_id>"
@@ -121,12 +122,24 @@ PK = "IDEMP#<customer_id>#<transaction_id>"
 PK = "WIN#<customer_id>"
 SK = "<epoch>#<transaction_id>"
 { amount: 1899.90, country: "BR", device_id: "<uuid>", ttl: 1756045091 }
-
-// perfil de risco (opcional por cliente, sem TTL)
-PK = "RISK#<customer_id>"
-{ limite_valor: 15000, nivel: "private", updated_at: 1756044000 }
 ```
 A regra de velocidade faz um Query em `WIN#<customer_id>` limitado por tempo e conta; o TTL expira o que envelhece, sem job de limpeza. **Invariante**: o TTL dos itens da janela deve ser ≥ o maior `window.span_seconds` entre todas as regras (mais margem), senão o dado expira antes de a regra poder olhá-lo.
+
+### Motor → Serviço de perfil de risco
+Consulta por `customer_id`, à semelhança do AppConfig: o motor lê de um serviço dedicado e mantém **cache local com TTL**, em vez de ser dono do dado. Isso tira a consulta do caminho quente na maioria das transações e torna a camada tolerante a falha — se o serviço cair, o motor usa o último perfil em cache; se nunca viu o cliente, usa o `default_customer_risk` do AppConfig. O `version` no retorno espelha o versionamento do AppConfig e permite invalidar o cache.
+```json
+// request
+{ "customer_id": "b1c4e2a0-7f33-4d9a-9b21-2e5f8c0a4d17" }
+
+// response (cliente com perfil)
+{
+  "customer_id": "b1c4e2a0-7f33-4d9a-9b21-2e5f8c0a4d17",
+  "limite_valor": 15000,
+  "nivel": "private",
+  "version": 7
+}
+// response (sem perfil) ⇒ 404 / vazio, motor cai no default do AppConfig
+```
 
 ### AppConfig → definição de regra
 Contrato que sustenta o "sem redeploy". Declara as camadas de que depende, a expressão e o que emite.
@@ -157,7 +170,7 @@ Contrato que sustenta o "sem redeploy". Declara as camadas de que depende, a exp
 `requires` habilita o modo degradado: `customer_risk` indisponível ou cliente sem perfil ⇒ usa o default; janela indisponível ⇒ regra pulada e alerta parcial.
 
 ### AppConfig → parâmetros operacionais
-Ajustes gerais mutáveis sem redeploy; contém o **default global de risco**, aplicado a todo cliente sem perfil próprio e como fallback quando o store de risco está fora.
+Ajustes gerais mutáveis sem redeploy; contém o **default global de risco**, aplicado a todo cliente sem perfil próprio e como fallback quando o serviço de risco está indisponível sem cache.
 ```json
 {
   "version": 5,
@@ -209,7 +222,7 @@ No escopo do motor, o único dado que trafega é o necessário para detectar: a 
 
 **Estado de janela é efêmero.** Se uma task reinicia, a janela reidrata em minutos. Caminho de recuperação para mais robustez: reprocessar de um stream interno a partir de um offset recente.
 
-**Default de risco no AppConfig, não no DynamoDB.** O default é valor único e geral (política); o DynamoDB guarda só os clientes com parâmetro personalizado. Um único caminho de fallback cobre "cliente sem perfil" e "store de risco fora".
+**Perfil de risco num serviço, com cache local.** O perfil por cliente é consultado num serviço dedicado (à semelhança do AppConfig), com cache local e TTL no motor: a consulta não pesa no caminho quente e o serviço fora não derruba a detecção — cai no último valor em cache ou no default. O motor não é dono do dado de risco do cliente. O default global (valor único, versionado) fica no AppConfig, cobrindo cliente desconhecido e serviço indisponível sem cache.
 
 **Regras e parâmetros como configuração versionada** no AppConfig, com validação e rollback — extensibilidade sem redeploy, com a equipe antifraude como dona.
 
@@ -219,6 +232,6 @@ Com ingestão por API, a escala é horizontal: múltiplas tasks do motor no ECS 
 
 ## 8. Estratégia de testes e observabilidade
 
-**Testes.** Regras em testes de tabela (evento + janela + risco na entrada, severidade/categoria esperadas na saída). Modo degradado (janela fora ⇒ regra pulada, alerta parcial; risco fora ⇒ default). Idempotência (duplicata processada uma vez). Determinismo do `alert_id`. Contrato da API de ingestão (`httptest`: payload válido, inválido, duplicata). Config inválida rejeitada mantendo a última versão boa. Teste de carga com k6 contra a API para validar o orçamento de latência no pico.
+**Testes.** Regras em testes de tabela (evento + janela + risco na entrada, severidade/categoria esperadas na saída). Modo degradado (janela fora ⇒ regra pulada, alerta parcial; serviço de risco fora ⇒ último cache ou default). Idempotência (duplicata processada uma vez). Determinismo do `alert_id`. Contrato da API de ingestão (`httptest`: payload válido, inválido, duplicata). Config inválida rejeitada mantendo a última versão boa. Teste de carga com k6 contra a API para validar o orçamento de latência no pico.
 
 **Observabilidade (SRE).** Métricas de TPS de ingestão, p99 de latência (requisição → alerta), taxa de alertas, taxa de duplicatas, avaliações parciais por camada degradada, e `rule_version`/`params_version` ativos. SLOs sobre p99 e taxa de erro da API, com runbook para os cenários de store de estado indisponível e pico sustentado.
