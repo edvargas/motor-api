@@ -69,8 +69,13 @@ janela e risco do cliente, e então delega a decisão ao `engine.Evaluator`
    regra pode referenciar: sempre os campos da transação (`amount`,
    `currency`, `channel`, `device_id`, `customer_id`); `risk.limite_valor` e
    `risk.nivel` se a regra declarar `requires: [customer_risk]`; e
-   `window.count_channel_*` (contagem por canal na janela `span_seconds`) se
-   a regra declarar `requires: [window]`.
+   `window.*` se a regra declarar `requires: [window]`, cujo formato depende
+   de `window.type`: `count` expõe `window.count_channel_*` (contagem por
+   canal na janela `span_seconds`); `geo_distance` expõe
+   `window.max_distance_km` (maior distância, em km, entre a `geo` da
+   transação atual e a de qualquer outra transação do cliente na janela);
+   `device_diversity` expõe `window.distinct_devices` (quantidade de
+   `device_id` distintos do cliente na janela).
 2. **Compila e roda a condição.** A `condition` da regra é uma expressão
    [`expr`](https://github.com/expr-lang/expr) (ex.:
    `amount > risk.limite_valor && channel == "pix"`), compilada uma vez por

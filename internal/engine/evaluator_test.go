@@ -13,7 +13,9 @@ import (
 
 // fakeWindowStore is a minimal in-test stub satisfying ports.WindowStore.
 type fakeWindowStore struct {
-	counts map[domain.Channel]int
+	counts          map[domain.Channel]int
+	maxDistanceKm   float64
+	distinctDevices int
 }
 
 func (f *fakeWindowStore) Record(ctx context.Context, customerID string, tx domain.Transaction, ttl time.Duration) error {
@@ -22,6 +24,14 @@ func (f *fakeWindowStore) Record(ctx context.Context, customerID string, tx doma
 
 func (f *fakeWindowStore) CountByChannel(ctx context.Context, customerID string, channel domain.Channel, span time.Duration) (int, error) {
 	return f.counts[channel], nil
+}
+
+func (f *fakeWindowStore) MaxDistanceKm(ctx context.Context, customerID string, tx domain.Transaction, span time.Duration) (float64, error) {
+	return f.maxDistanceKm, nil
+}
+
+func (f *fakeWindowStore) DistinctDeviceCount(ctx context.Context, customerID string, span time.Duration) (int, error) {
+	return f.distinctDevices, nil
 }
 
 func TestEvaluateTriggersVelocidadePix(t *testing.T) {
@@ -78,6 +88,52 @@ func TestEvaluateValorAtipicoDefaultVsCustomLimit(t *testing.T) {
 	resCustom, err := ev.Evaluate(context.Background(), []domain.RuleDef{rule}, tx, domain.RiskProfile{LimiteValor: 10000}, true)
 	require.NoError(t, err)
 	assert.Empty(t, resCustom.TriggeredRules, "6000 < custom 10000 should not trigger")
+}
+
+func TestEvaluateTriggersGeolocDistante(t *testing.T) {
+	rule := domain.RuleDef{
+		RuleID: "geoloc-distante", Version: 1, Enabled: true,
+		Requires:  []string{"event", "window"},
+		Window:    &domain.WindowSpec{SpanSeconds: 3600, Type: domain.WindowTypeGeoDistance},
+		Condition: "window.max_distance_km > 100",
+		Emits:     domain.RuleEmits{Severity: domain.SeverityAlta, Category: "geolocalizacao"},
+	}
+	store := &fakeWindowStore{maxDistanceKm: 250}
+	ev := NewEvaluator(store)
+	tx := domain.Transaction{CustomerID: "c1", TransactionID: "t1", Amount: 100, Currency: "BRL", Channel: domain.ChannelPix, CapturedAt: time.Now()}
+
+	res, err := ev.Evaluate(context.Background(), []domain.RuleDef{rule}, tx, domain.RiskProfile{}, true)
+	require.NoError(t, err)
+	assert.Len(t, res.TriggeredRules, 1)
+	assert.Contains(t, res.Categories, "geolocalizacao")
+
+	store.maxDistanceKm = 50
+	res, err = ev.Evaluate(context.Background(), []domain.RuleDef{rule}, tx, domain.RiskProfile{}, true)
+	require.NoError(t, err)
+	assert.Empty(t, res.TriggeredRules, "distance within 100km should not trigger")
+}
+
+func TestEvaluateTriggersDeviceMultiplo(t *testing.T) {
+	rule := domain.RuleDef{
+		RuleID: "device-multiplo", Version: 1, Enabled: true,
+		Requires:  []string{"event", "window"},
+		Window:    &domain.WindowSpec{SpanSeconds: 600, Type: domain.WindowTypeDeviceDiversity},
+		Condition: "window.distinct_devices > 1",
+		Emits:     domain.RuleEmits{Severity: domain.SeverityAlta, Category: "dispositivo"},
+	}
+	store := &fakeWindowStore{distinctDevices: 2}
+	ev := NewEvaluator(store)
+	tx := domain.Transaction{CustomerID: "c1", TransactionID: "t1", Amount: 100, Currency: "BRL", Channel: domain.ChannelPix, DeviceID: "d2", CapturedAt: time.Now()}
+
+	res, err := ev.Evaluate(context.Background(), []domain.RuleDef{rule}, tx, domain.RiskProfile{}, true)
+	require.NoError(t, err)
+	assert.Len(t, res.TriggeredRules, 1)
+	assert.Contains(t, res.Categories, "dispositivo")
+
+	store.distinctDevices = 1
+	res, err = ev.Evaluate(context.Background(), []domain.RuleDef{rule}, tx, domain.RiskProfile{}, true)
+	require.NoError(t, err)
+	assert.Empty(t, res.TriggeredRules, "single device should not trigger")
 }
 
 func TestScoreAggregatesMaxAndMean(t *testing.T) {

@@ -23,5 +23,23 @@
     "requires": ["event", "customer_risk"],
     "condition": "amount > (risk.limite_valor * 5)",
     "emits": { "severity": "critica", "category": "valor" }
+  },
+  {
+    "rule_id": "geoloc-distante",
+    "version": 1,
+    "enabled": true,
+    "requires": ["event", "window"],
+    "window": { "span_seconds": 3600, "type": "geo_distance" },
+    "condition": "window.max_distance_km > 100",
+    "emits": { "severity": "alta", "category": "geolocalizacao" }
+  },
+  {
+    "rule_id": "device-multiplo",
+    "version": 1,
+    "enabled": true,
+    "requires": ["event", "window"],
+    "window": { "span_seconds": 600, "type": "device_diversity" },
+    "condition": "window.distinct_devices > 1",
+    "emits": { "severity": "alta", "category": "dispositivo" }
   }
 ]

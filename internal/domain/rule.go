@@ -3,7 +3,11 @@ package domain
 // WindowType is the kind of aggregate a rule's window layer computes.
 type WindowType string
 
-const WindowTypeCount WindowType = "count"
+const (
+	WindowTypeCount           WindowType = "count"
+	WindowTypeGeoDistance     WindowType = "geo_distance"
+	WindowTypeDeviceDiversity WindowType = "device_diversity"
+)
 
 // WindowSpec configures the sliding window a rule reads from.
 type WindowSpec struct {

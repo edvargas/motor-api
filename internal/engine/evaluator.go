@@ -166,15 +166,31 @@ func (e *Evaluator) buildEnv(ctx context.Context, rule domain.RuleDef, tx domain
 
 	if rule.RequiresLayer("window") {
 		span := time.Duration(rule.Window.SpanSeconds) * time.Second
-		counts := make(map[string]any, len(knownChannels))
-		for _, ch := range knownChannels {
-			n, err := e.windowStore.CountByChannel(ctx, tx.CustomerID, ch, span)
+
+		switch rule.Window.Type {
+		case domain.WindowTypeGeoDistance:
+			d, err := e.windowStore.MaxDistanceKm(ctx, tx.CustomerID, tx, span)
 			if err != nil {
-				return nil, fmt.Errorf("counting channel %q: %w", ch, err)
+				return nil, fmt.Errorf("computing max distance: %w", err)
 			}
-			counts["count_channel_"+string(ch)] = n
+			env["window"] = map[string]any{"max_distance_km": d}
+		case domain.WindowTypeDeviceDiversity:
+			n, err := e.windowStore.DistinctDeviceCount(ctx, tx.CustomerID, span)
+			if err != nil {
+				return nil, fmt.Errorf("counting distinct devices: %w", err)
+			}
+			env["window"] = map[string]any{"distinct_devices": n}
+		default:
+			counts := make(map[string]any, len(knownChannels))
+			for _, ch := range knownChannels {
+				n, err := e.windowStore.CountByChannel(ctx, tx.CustomerID, ch, span)
+				if err != nil {
+					return nil, fmt.Errorf("counting channel %q: %w", ch, err)
+				}
+				counts["count_channel_"+string(ch)] = n
+			}
+			env["window"] = counts
 		}
-		env["window"] = counts
 	}
 
 	return env, nil
